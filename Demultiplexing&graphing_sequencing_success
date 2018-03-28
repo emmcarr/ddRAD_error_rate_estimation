@@ -1,0 +1,161 @@
+
+## This pipeline has several steps. Firstly, there's demultiplexing. 
+## Then the pipeline branches into genome aligned and de novo branches. I tried aligning my data against the bowhead genome
+## but the proportion of mapped reads was low (70%) so I have gone with de novo instead, but my genome referenced code is in 
+## separate file on this github repository. 
+
+#The first is to demultiplex the data using stacks and then graph the data in R. 
+## I did this using loops with standard fastq.gz files that were already demultiplexed by reverse index.
+## The fastq.gz files and linked barcode files followed a standardised naming pattern, and the fastq.gz files are kept in directory raw
+## while the outputs go to population specific folders.
+
+##  Bash shell script
+######################################################################################################################################
+#!/bin/bash 
+#$ -cwd 
+#$ -j y
+#$ -S /bin/bash 
+#$ -V
+#$ -N NZDemTrun ## job name
+
+#$ -q all.q
+
+# load stacks v2
+module load stacks/2.0Beta7c
+
+# demultiplex fastq files name that start with NZ1...NZ6 with barcode files named similarly
+for i in {1..6}
+	do
+	process_radtags -1 ./raw/NZ${i}_R1_001.fastq.gz -2 ./raw/NZ${i}_R2_001.fastq.gz -o ./stacksv2/NZ \
+	-b ./barcode/BarcodeNZ${i}.txt --renz_1 hindIII --renz_2 mspI -t 90 -i gzfastq -y gzfastq
+
+	## rename log file so that this is not overwritten
+		mv ./stacksv2/NZ/process_radtags.raw.log ./stacksv2/NZ/NZ${i}_process_radtags.raw.log
+done
+
+######################################################################################################################################
+
+## After this I took the information from the log files - NoRadTag	LowQuality	Retained - on a per sample basis and do the 
+## low tech option of putting it in an excel spread sheet. I also take the information on reads per lane.
+
+## Then I save the data of interest to a csv file and use R to graph the results, to see if any particular barcode or 
+## population has low sequencing success.
+
+######################################################################################################################################
+## R code
+library(ggplot2)
+library(scales)
+library(reshape2)
+library(devtools)
+
+## plotting sequencing success
+setwd("/Users/emac/Dropbox/Bioinformatics/RawDataInfo")
+Seqinfo<-read.csv("/Users/emac/Dropbox/Bioinformatics/RawDataInfo/SeqSuccess_Mar18.txt", header = TRUE)
+
+pdf("SeqSuccessByX.pdf")
+
+boxplot(Seqinfo$Total~Seqinfo$BarcodeN,
+        main="Sequencing success by barcode",
+        xlab="Sequencing barcode",
+        ylab="Number of reads per sample")
+
+
+boxplot(Seqinfo$Total~Seqinfo$Pop,
+        main="Sequencing success by population",
+        xlab="Pop",
+        ylab="Number of reads per sample")
+
+boxplot(Seqinfo$Total~Seqinfo$Library,
+        main="Sequencing success by library",
+        xlab="Library",
+        ylab="Number of reads per sample")
+
+boxplot(Seqinfo$Total~Seqinfo$Lane,
+        main="Sequencing success by lane",
+        xlab="Lane",
+        ylab="Number of reads per sample")
+dev.off()
+
+### plotting total number of reads per sample coloured by pop
+## just selecting population total values
+Seqi1<-melt(Seqinfo[,c(3,6,7)])
+
+## using ggplot to do barplot
+
+s<-ggplot(data=Seqi1, aes(x=Sample, y=value, fill=Pop))
+
+s<-s+geom_bar(stat='identity')
+
+s<-s+theme(axis.text.x = element_blank(),
+           axis.text.y = element_text(size=10),
+           legend.text=element_text(size=10),
+           legend.title=element_blank())
+s
+ggsave("SequencingSuccessBarPlot.pdf")
+
+## breakdown by quality per sample
+Seqi<-melt(Seqinfo[,c(3,6,8:10)])
+states<-c("NoRadTag", "LowQuality", "Retained")
+Pops<-c("AUS", "NZ", "PV", "BRZ", "SAC", "SAN")
+Seqi<-within(Seqi,variable<-factor(variable,levels=states))
+Seqi<-within(Seqi,Pop<-factor(Pop,levels=Pops))
+
+## colour the proportion of reads by state
+myPal4 <- c("green" ,"blue", "yellow")
+
+## open file to print results to 
+pdf ("QualityPerPop.pdf")
+
+## results displayed with one plot per population, as a proportion of reads in each state
+q<-ggplot(data=Seqi[Seqi$Pop=="AUS",], aes(x=Sample, y=value, fill=variable))
+q<-q+geom_bar(position="fill",stat='identity')+scale_y_continuous(labels=percent_format())+scale_fill_manual(values = myPal4)
+q<-q+theme(axis.text.x = element_text(size=6, angle = 90),
+           axis.text.y = element_text(size=10),
+           legend.text=element_text(size=10),
+           legend.title=element_blank())
+q
+
+q<-ggplot(data=Seqi[Seqi$Pop=="NZ",], aes(x=Sample, y=value, fill=variable))
+q<-q+geom_bar(position="fill",stat='identity')+scale_y_continuous(labels=percent_format())+scale_fill_manual(values = myPal4)
+q<-q+theme(axis.text.x = element_text(size=6, angle = 90),
+           axis.text.y = element_text(size=10),
+           legend.text=element_text(size=10),
+           legend.title=element_blank())
+q
+
+q<-ggplot(data=Seqi[Seqi$Pop=="PV",], aes(x=Sample, y=value, fill=variable))
+q<-q+geom_bar(position="fill",stat='identity')+scale_y_continuous(labels=percent_format())+scale_fill_manual(values = myPal4)
+q<-q+theme(axis.text.x = element_text(size=8, angle = 90),
+           axis.text.y = element_text(size=10),
+           legend.text=element_text(size=10),
+           legend.title=element_blank())
+q
+
+q<-ggplot(data=Seqi[Seqi$Pop=="BRZ",], aes(x=Sample, y=value, fill=variable))
+q<-q+geom_bar(position="fill",stat='identity')+scale_y_continuous(labels=percent_format())+scale_fill_manual(values = myPal4)
+q<-q+theme(axis.text.x = element_text(size=8, angle = 90),
+           axis.text.y = element_text(size=10),
+           legend.text=element_text(size=10),
+           legend.title=element_blank())
+q
+
+q<-ggplot(data=Seqi[Seqi$Pop=="SAC",], aes(x=Sample, y=value, fill=variable))
+q<-q+geom_bar(position="fill",stat='identity')+scale_y_continuous(labels=percent_format())+scale_fill_manual(values = myPal4)
+q<-q+theme(axis.text.x = element_text(size=8, angle = 90),
+           axis.text.y = element_text(size=10),
+           legend.text=element_text(size=10),
+           legend.title=element_blank())
+q
+
+q<-ggplot(data=Seqi[Seqi$Pop=="SAN",], aes(x=Sample, y=value, fill=variable))
+q<-q+geom_bar(position="fill",stat='identity')+scale_y_continuous(labels=percent_format())+scale_fill_manual(values = myPal4)
+q<-q+theme(axis.text.x = element_text(size=8, angle = 90),
+           axis.text.y = element_text(size=10),
+           legend.text=element_text(size=10),
+           legend.title=element_blank())
+
+q
+
+dev.off()
+
+######################################################################################################################################
