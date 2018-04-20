@@ -1,0 +1,13 @@
+## Now the data are QC'd and separated into sample, I will use bwa to map against the reference and then the stacks pipeline to call
+## loci. 
+
+## The overall goal is to build multiple catalogues, each with different combinations of parameters, using: (1) 20 samples per sampling 
+## location, in order to give a good representation of alleles, and (2) 20 replicate samples that have been run twice, in order to get 
+## an estimate of the error rate. 
+## The error rate, in addition to statistics like mean coverage per locus will help determine which combination of parameters is
+## optimal for my dataset.
+
+## the first step is to align the QC'd reads against the genome using bwa. I separate my samples by sampling location, as it means
+## I find it easier to keep track of what I'm doing and is easily scalable; starting with 20 here but will end up with 60 samples
+## when I optimise the pipeline.
+
