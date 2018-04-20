@@ -1,8 +1,6 @@
 
 ## This pipeline has several steps. Firstly, there's demultiplexing. 
-## Then the pipeline branches into genome aligned and de novo branches. I tried aligning my data against the bowhead genome
-## but the proportion of mapped reads was low (70%) so I have gone with de novo instead, but my genome referenced code is in 
-## separate file on this github repository. 
+## Then the pipeline branches into genome aligned and de novo branches. 
 
 #The first is to demultiplex the data using stacks and then graph the data in R. 
 ## I did this using loops with standard fastq.gz files that were already demultiplexed by reverse index.
