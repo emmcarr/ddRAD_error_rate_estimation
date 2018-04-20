@@ -1,13 +1,149 @@
 ## Now the data are QC'd and separated into sample, I will use bwa to map against the reference and then the stacks pipeline to call
 ## loci. 
 
-## The overall goal is to build multiple catalogues, each with different combinations of parameters, using: (1) 20 samples per sampling 
-## location, in order to give a good representation of alleles, and (2) 20 replicate samples that have been run twice, in order to get 
-## an estimate of the error rate. 
-## The error rate, in addition to statistics like mean coverage per locus will help determine which combination of parameters is
-## optimal for my dataset.
+The overall goal is to build multiple catalogues, each with different combinations of parameters, using: (1) 20 samples per sampling 
+location, in order to give a good representation of alleles, and (2) 20 replicate samples that have been run twice, in order to get 
+an estimate of the error rate. 
 
-## the first step is to align the QC'd reads against the genome using bwa. I separate my samples by sampling location, as it means
-## I find it easier to keep track of what I'm doing and is easily scalable; starting with 20 here but will end up with 60 samples
-## when I optimise the pipeline.
+The error rate, in addition to statistics like mean coverage per locus will help determine which combination of parameters is
+optimal for my dataset.
 
+The first step is to align the QC'd reads against the genome using bwa. I separate my samples by sampling location, as it means
+I find it easier to keep track of what I'm doing and is easily scalable; starting with 20 here but will end up with 60 samples
+when I optimise the pipeline. It's also because it makes looping easier, due to where the samples are stored.
+
+Bash script for aligning with bwa:
+################################################################################################################################################
+#!/bin/bash 
+#$ -cwd 
+#$ -j y
+#$ -S /bin/bash 
+#$ -V
+#$ -N BZalign2 ## job name
+
+#$ -q all.q
+
+# load bwa
+module load bwa
+
+for opt in BZ_BR00EA51 BZ_BR00EA91S BZ_BR00SA65 BZ_BR99EA22 BZ_BR99EA41 BZ_BREA103 BZ_BREA104 BZ_BREA105 BZ_BREA11 BZ_BREA46 BZ_BREA53 BZ_BREA63 BZ_BREA71 BZ_BREA81 BZ_BREA82 BZ_BREA86 BZ_BREA88 BZ_BREA96 BZ_BREA98 BZ_BREA9909
+	do
+		## shout out to sample being analysed
+		echo now analysing ${opt}
+
+		# align paired end reads to SRW genome
+		bwa mem /storage/home/users/elc6/stacksv2/SRWgenome/RWref -t 5 \
+		/storage/home/users/elc6/stacksv2/demup/${opt}.1.fq.gz \
+		/storage/home/users/elc6/stacksv2/demup/${opt}.2.fq.gz \
+		> /storage/home/users/elc6/stacksv2/align/${opt}_aln.sam
+done
+################################################################################################################################################
+
+In order to be able to build a stacks catalogue from the mapped reads, we need to do a few 'house keeping' steps.
+The first is to convert the sam file to a bam file, then we sort reads by mapping position, both using samtools. Then we add read
+groups, or a way to identify a set of reads that were generated from a single run of a sequencing instrument, to the files.
+
+################################################################################################################################################
+#!/bin/bash 
+#$ -cwd 
+#$ -j y
+#$ -S /bin/bash 
+#$ -V
+#$ -N BZaligninfo ## job name
+
+#$ -q all.q
+
+# load 
+#module load samtools/1.6
+samtools=/shelf/modulefiles/tools/samtools/1.6/bin/samtools
+module load picard-tools
+module load stacks/2.0Beta9
+
+for opt in BZ_BR00EA51 BZ_BR00EA91 BZ_BR00SA65 BZ_BR99EA22 BZ_BR99EA41 BZ_BREA103 BZ_BREA104 BZ_BREA105 BZ_BREA11 BZ_BREA46	BZ_BREA53 BZ_BREA63 BZ_BREA71 BZ_BREA81 BZ_BREA82 BZ_BREA86 BZ_BREA88 BZ_BREA96 BZ_BREA98 BZ_BREA9909
+	do
+
+	#print name of sample analysing
+			echo now analysing $opt
+	
+	#make directory for out put files of gstacks
+			mkdir /storage/home/users/elc6/stacksv2/gstacks/${opt}
+	
+	# convert from sam to bam
+			$samtools
+			$samtools view -h -S -b /storage/home/users/elc6/stacksv2/align/${opt}_aln.sam -o /storage/home/users/elc6/stacksv2/align/${opt}_aln.bam
+	
+	# sort reads using samtools
+			$samtools	
+			$samtools sort /storage/home/users/elc6/stacksv2/align/${opt}_aln.bam -o /storage/home/users/elc6/stacksv2/align/${opt}_alnS.bam
+
+	## add read groups so that it can be analysed by gstacks withouth popmap
+	java -jar /usr/local/Modules/modulefiles/tools/picard-tools/2.14.1/picard.jar AddOrReplaceReadGroups \
+      I=/storage/home/users/elc6/stacksv2/align/${opt}_alnS.bam \
+      O=/storage/home/users/elc6/stacksv2/align/${opt}_alnSRG.bam \
+      RGID=HJF3HB \
+      RGLB=${opt}lib1 \
+      RGPU=HJF3HBBXX \
+      RGPL=illumina \
+      RGSM=${opt}
+      
+      ## analyse single file with gstacks to get alignment and loci statistics: not necessary but can be interesting
+  #    gstacks --paired -B /storage/home/users/elc6/stacksv2/align/${opt}_alnSRG.bam \
+  #    -O /storage/home/users/elc6/stacksv2/gstacks/${opt} \
+   #   --max-clipped 0.1 --min-mapq 10
+      
+done
+
+################################################################################################################################################
+
+Now, all the samples are in the 'align' folder, along with 20 each from 4 other sampling locations and the replicate samples. The
+population of origin is defined in what stacks calls the popmap file.
+
+I am going to run gstacks and then populations separately.
+
+gstacks code:
+this varies several of the pipeline parameters to see how the loci calls co-vary with these
+################################################################################################################################################
+#!/bin/bash 
+#$ -cwd 
+#$ -j y
+#$ -S /bin/bash 
+#$ -V
+#$ -N Trial_4Vars ## job name
+
+#$ -q all.q
+
+# load stacks
+module load stacks/2.0Beta9
+
+			## set --min-mapq variables to loop through: minimum mapping quality
+			for var_m in 10 20  
+				do
+				
+				## set --max-clipped variable to loop through: maximum soft clipping proportion
+				for var_c in 0.1 0.2 
+						do
+				
+					## set --var-alpha variable to loop through: alpha for calling SNPs
+					for var_valpha in 0.05 0.01 
+							do
+						
+						## set --gt-alpha variable to loop through: alpha for calling genotypes
+						for var_gta in 0.05 0.01 
+							do
+							
+							#print samples and parameter combo under analysis so its easy to see where you are at in the log file
+							echo Trial Samples and Replicates mapq: $var_m max clipped: $var_c var alpha: $var_valpha gt alpha: $var_gta
+				
+							## make directory to hold output
+							mkdir /storage/home/users/elc6/stacksv2/gstacks/Trial_mapq${var_m}_clip${var_c}_varalpha${var_valpha}_gtalpha${var_gta}
+     			
+     						## create loci catalogue using gstacks
+      						gstacks -M ./stacksv2/popmap_refcat_Reps.txt \
+      							-I ./stacksv2/align/ \
+								-O ./stacksv2/gstacks/Trial_mapq${var_m}_clip${var_c}_varalpha${var_valpha}_gtalpha${var_gta}/ \
+								--max-clipped ${var_c} --min-mapq ${var_m} --var-alpha ${var_valpha} --gt-alpha ${var_gta} -t 3
+					done
+				done
+			done
+		done
+################################################################################################################################################
