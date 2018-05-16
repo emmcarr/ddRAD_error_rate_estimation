@@ -2,7 +2,7 @@
 ## loci. 
 
 The overall goal is to build multiple catalogues, each with different combinations of parameters, using: (1) 20 samples per sampling 
-location, in order to give a good representation of alleles, and (2) 20 replicate samples that have been run twice, in order to get 
+location, in order to give a good representation of alleles, and (2) 10 replicate samples that have been run twice, in order to get 
 an estimate of the error rate. 
 
 The error rate, in addition to statistics like mean coverage per locus will help determine which combination of parameters is
@@ -147,3 +147,199 @@ module load stacks/2.0Beta9
 			done
 		done
 ################################################################################################################################################
+
+The next step is to create a dataset based on the 100 'reference' samples and then use this set of filtered loci to call the repeats
+and estimate an error rate. This is done in bash script on the cluster, switching between R, vcftools and stacks. I am just working
+this out and will loop it in the future, but this is the outline. Some of this code comes from Chris Hollenbeck https://github.com/chollenbeck
+
+################################################################################################################################################
+
+## load programs, and newer version of vcftools: an older one is loaded with dDocent
+module load stacks/2.0Beta9	
+module load vcflib/gitv0_e3ab177
+module load dDocent/gitv0_7dea314
+module unload vcftools/0.1.11 
+module load vcftools/0.1.12a
+
+## use populations to pull all loci called by gstacks that are variable; minor allele frequency of 0.01 means that at least one
+## individual in 100 has a variable site. This is just the beginning, so it's just to get the variable loci.
+## the popmap file only has the 100 reference samples in it
+
+populations -P ./stacksv2/gstacks/Trial_mapq10_clip0.1_varalpha0.01_gtalpha0.01/ \
+	-M ./stacksv2/gstacks/RefmapTrialVcf/popmap_refcat_RepsV3.txt \
+	-O ./stacksv2/gstacks/RefmapTrialVcf --vcf -t 16 --min_maf 0.01
+
+## switch to R and load programs needed
+R
+
+library(tidyverse)
+library(stringr)
+
+## Step 1: Initial filtering by quality and missing data
+# Filter genotypes with genotype quality < 20
+system("vcftools --vcf populations.snps.vcf --out out.1 --minGQ 20 --recode --recode-INFO-all")
+
+# Filter out sites that were made monomorphic by the previous filter
+system("vcftools --vcf out.1.recode.vcf --maf 0.001 --out out.2 --recode --recode-INFO-all")
+
+# Remove sites with more than 50% missing data
+system("vcftools --vcf out.2.recode.vcf --out out.3 --max-missing 0.5 --recode --recode-INFO-all")
+
+# Cannot remove loci with extreme allele balance or filter by SNP quality as CH did
+# but this is accounted for by the genotype calling algorithm used by Stacks
+
+# Produce a file with missingness per individual
+system("vcftools --vcf out.3.recode.vcf --out out.3 --missing-indv")
+
+## Step 2: Filtering inidvidual samples by missing data
+#Plot missingness
+# Load the data for the missingness file and sort data by population
+out_3_imiss <- read_tsv("out.3.imiss")
+pop<-c(rep("NZ", 20), rep("AUS", 20), rep("BRZ", 20), rep ("ARG", 20), rep("SAF", 20))
+missingness<-cbind(out_3_imiss, pop)
+missplot<-melt(missingness[,c(1,5,6)])
+Pops<-c("AUS", "NZ", "ARG", "BRZ", "SAF")
+missplot<-within(missplot,pop<-factor(pop,levels=Pops))
+
+# set colours for plotting
+myPal4 <- c("green" ,"blue", "yellow", "pink", "orange")
+
+mp<-ggplot(data=missplot, aes(x=INDV, y=value, fill=pop))
+mp<-mp+geom_bar(stat = "identity")+scale_y_continuous(labels=percent_format())+scale_fill_manual(values = myPal4)
+mp<-mp+theme(axis.text.x = element_text(size=6, angle = 90),
+           axis.text.y = element_text(size=10),
+           legend.text=element_text(size=10),
+           legend.title=element_blank())
+
+#check it plotted OK
+mp
+
+# save as pdf
+pdf("missingness_by_pop.pdf")
+mp
+dev.off()
+
+# Select individuals with more than 50% missing data
+miss_50 <- filter(out_3_imiss, F_MISS > 0.5) %>%
+            select(INDV)
+
+# Write the individuals to remove to a file
+write_delim(miss_50, "remove.3.inds", col_names = FALSE)
+
+# Remove individuals with >50% missing data
+system("vcftools --vcf out.3.recode.vcf --out out.4 --remove remove.3.inds --recode --recode-INFO-all")
+
+## Step 3: Filtering loci with high read depth and missing data
+# Calculate site depth
+system("vcftools --vcf out.4.recode.vcf --site-depth --out out.5")
+
+# Read in the site depth file and calculate mean depth divided by number of samples
+site_depth_5 <- read_tsv("out.5.ldepth") %>%
+                  mutate(MEAN_DEPTH = SUM_DEPTH / 137)
+
+# Plot a histogram of the mean site depth per locus
+qplot(site_depth_5$MEAN_DEPTH, binwidth = 5, xlim = c(0, 300))
+
+# Filter out loci with a mean site depth > 3x the overall mean
+mean_site_depth_5 <- mean(site_depth_5$MEAN_DEPTH)
+to_keep_5 <- filter(site_depth_5, MEAN_DEPTH < 3 * mean_site_depth_5)
+mean_site_depth_5_filt <- mean(to_keep_5$MEAN_DEPTH)
+
+# Plot the distribution again
+qplot(to_keep_5$MEAN_DEPTH)
+
+# Make a list of the sites to filter
+to_filter_5 <- filter(site_depth_5, MEAN_DEPTH >= 3 * mean_site_depth_5) %>%
+                  select(CHROM, POS)
+
+# Write the sites to remove to a file
+write_delim(to_filter_5, "remove.5.sites", col_names = FALSE)
+
+# Remove the sites with VCFtools
+system("vcftools --vcf out.4.recode.vcf --out out.5 --exclude-positions remove.5.sites --recode --recode-INFO-all")
+# 128991 kept
+
+# Remove sites with more than 75% missing data
+system("vcftools --vcf out.5.recode.vcf --out out.6 --max-missing 0.75 --recode --recode-INFO-all")
+#94179 kep
+
+## Step 4: Filtering individuals with >25% missing data
+# Calculate individual missingness
+system("vcftools --vcf out.6.recode.vcf --out out.7 --missing-indv")
+       
+# Load the data for the out.7.recode.vcf file
+out_7_imiss <- read_tsv("out.7.imiss")
+
+# Plot a quick histogram of the data
+qplot(out_7_imiss$F_MISS)
+
+# Select individuals with more than 25% missing data
+miss_7 <- filter(out_7_imiss, F_MISS > 0.25) %>%
+  select(INDV)
+
+# Write the individuals to remove to a file
+write_delim(miss_7, "remove.7.inds", col_names = FALSE)
+
+# Remove the individuals with more than 25% missing genotypes
+system("vcftools --vcf out.6.recode.vcf --out out.7 --remove remove.7.inds --recode --recode-INFO-all")
+
+## Step 5: Create 'whitelist' of loci and 'blacklist' of samples to take back to stacks
+## which individuals to remove?
+remove <- c(miss_7, miss_50)
+
+## which loci to keep?
+## create list of loci that have survived filtering thus far
+system("vcftools --vcf out.7.recode.vcf --site-depth --out out.8")
+whitelist_8a <- read_tsv("out.8.ldepth")
+
+## extract chromosome and position of loci to use
+whitelist_8 <- whitelist_8a[,1:2]
+
+## get rid of "Contig" prefix of loci so that stacks can understand the input
+whitelist_8[,1]<-rapply(whitelist_8[,1], function(x) as.numeric(gsub("Contig", "", x)), 
+                how = "replace") 
+
+## write good loci to file
+write_delim(whitelist_8, "whitelist_8", col_names = FALSE)
+
+## Step 6: Re-extract loci from stacks using whitelist and additional filtering
+# filters: --min-maf of 0.05 : minor allele frequency
+#	   --max_obs_het: maximum observed heterozygosity
+#	   -p number of pops the loci needs to be in to include
+#          -r number of individuals per population loci needs to be in
+# also: --hwe so that loci can be filtered by hwe as well
+
+system("populations -P ./stacksv2/gstacks/Trial_mapq10_clip0.1_varalpha0.01_gtalpha0.01/ \
+	-M ./stacksv2/gstacks/RefmapTrialVcf/popmap_refcat_Repsv2.txt \
+	-O ./stacksv2/gstacks/RefmapTrialVcf/WL \
+	-W ./stacksv2/gstacks/RefmapTrialVcf/whitelist_8 \
+	-p 5 -r 0.75 --vcf -t 16 --min-maf 0.05 --max_obs_het 0.85 --hwe")
+	
+## Step 7: Check duplicates for errors
+## create list of replicate samples
+dups_a<-c("NZ_Eau09NZ19_alnSRG", ""NZ_Eau08AI165_alnSRG"", "AUS_Eau95WA14_alnSRG",
+			"AUS_Eau95WA17_alnSRG", "AUS_Eau14HOB09_alnSRG", "SC_EAU16SAF35_alnSRG",
+			"PV_49m_alnSRG", "SC_EAU16SAF22_alnSRG", "BRZ_BREA85", "AUS_Eau12TAS05_alnSRG")
+			
+## and their duplicates
+dups_b<-c("NZ_Eau09NZ19R_alnSRG", ""NZ_Eau08AI165R_alnSRG"", "AUS_Eau95WA14R_alnSRG",
+			"AUS_Eau95WA17R_alnSRG", "AUS_Eau14HOB09R_alnSRG", "SC_EAU16SAF35R_alnSRG",
+			"PV_49mR_alnSRG", "SC_EAU16SAF22R_alnSRG", "BRZ_BREA85R", "AUS_Eau12TAS05R_alnSRG")
+
+# write the names to file
+write_delim(as.data.frame(dups_a), "dups_a.txt", col_names = FALSE)
+write_delim(as.data.frame(dups_b), "dups_b.txt", col_names = FALSE)
+
+#filter to create one vcf file of samples and one of their duplicates
+system("vcftools --vcf out.2.3.recode.vcf --out dups.a --keep dups_a.txt --recode --recode-INFO-all")
+system("vcftools --vcf out.2.3.recode.vcf --out dups.b --keep dups_b.txt --recode --recode-INFO-all")
+
+# need to rename samples so that they are the same: did this in text editor but will figure out a way to loop it
+# then compare the two files to identify discordant loci
+system("vcftools --vcf dups.a.recode.vcf --diff dups.c.recode.vcf --diff-site-discordance --out out.2.4")
+# this can be used to identify loci to exclude and estimate error rate
+
+
+
+
+
