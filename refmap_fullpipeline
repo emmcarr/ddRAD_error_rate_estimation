@@ -1,0 +1,106 @@
+refmap : full pipeline
+
+Now that I have my optimal combination of parameters from the trial, I aligned the rest of the samples to the genome and sorted the reads:
+
+Example alignment bash script
+###############################################################################################################################
+#!/bin/bash 
+#$ -cwd 
+#$ -j y
+#$ -S /bin/bash 
+#$ -V
+#$ -N BZalignFinal ## job name
+
+#$ -q all.q
+
+#$ -pe multi 4 # the script itself will command 3 processors in parallel, this can be referred to as NSLOTS in the commandline invocation
+
+# load bwa
+module load bwa
+
+for opt in BZ_BREA100 BZ_BREA100 BZ_BREA102 BZ_BREA110 BZ_BREA111 BZ_BREA112 BZ_BREA14 BZ_BREA17 BZ_BREA18 BZ_BREA23 BZ_BREA24 BZ_BREA37 BZ_BREA37 BZ_BREA48 BZ_BREA58 BZ_BREA64 BZ_BREA67 BZ_BREA73 BZ_BREA75 BZ_BREA79 BZ_BREA89 BZ_BREA90 BZ_BREA92 BZ_BREA94 BZ_BREA96 BZ_BREA96 BZ_BREA97 BZ_BREA99 BZ_BR00EA91S
+ do
+  ## shout out to sample being analysed
+  echo now analysing ${opt}
+
+  # align paired end reads to SRW genome
+  bwa mem /storage/home/users/elc6/stacksv2/SRWgenome/RWref -t $NSLOTS \
+  /storage/home/users/elc6/stacksv2/demup/${opt}.1.fq.gz \
+  /storage/home/users/elc6/stacksv2/demup/${opt}.2.fq.gz \
+  > /storage/home/users/elc6/stacksv2/align/${opt}_aln.sam
+done
+###############################################################################################################################
+
+Example sorting bash script
+
+#!/bin/bash 
+#$ -cwd 
+#$ -j y
+#$ -S /bin/bash 
+#$ -V
+#$ -N SortPV2 ## job name
+#$ -q all.q
+
+samtools=/shelf/modulefiles/tools/samtools/1.6/bin/samtools
+
+for opt in PV_44m PV_48m PV_50m PV_56m PV_56S PV_58L PV_58m PV_60m PV_63m PV_68m PV_70m PV_91m PV_94m PV_95j PV_C PV_gNI PV_Im PV_K1 PV_Um PV_Zm
+ do
+ 
+  ## shout out to sample being analysed
+  echo now analysing ${opt}
+
+  # move repeats into folder and convert to bam file
+   samtools view -h -S -b ./stacksv2/align/${opt}_aln.sam -o ./stacksv2/align/${opt}_aln.bam 
+
+  # sort reads in preparation for gstacks and put in folder for gstacks to play with
+  samtools sort ./stacksv2/align/${opt}_aln.bam -o ./stacksv2/align/sort/${opt}_alnS.bam
+  
+  done
+  
+###############################################################################################################################
+
+Some samples were run twice because of low number of runs. These were aligned and sorted separately with code like this:
+
+###############################################################################################################################
+#!/bin/bash 
+#$ -cwd 
+#$ -j y
+#$ -S /bin/bash 
+#$ -V
+#$ -N MergingPVRepeats2## job name
+#$ -q all.q
+
+module load samtools/1.6
+module load picard-tools/2.10.3
+
+for opt in PV_16m PV_109m PV_110m PV_27m
+ do
+ 
+  ## shout out to sample being analysed
+  echo now merging ${opt}
+
+  # move repeats into folder and convert to bam file
+   mv  /storage/home/users/elc6/stacksv2/align/${opt}_aln.sam /storage/home/users/elc6/stacksv2/align/repeats/${opt}_aln.sam 
+   mv  /storage/home/users/elc6/stacksv2/align/${opt}R_aln.sam /storage/home/users/elc6/stacksv2/align/repeats/${opt}R_aln.sam 
+ 
+  samtools view -h -S -b /storage/home/users/elc6/stacksv2/align/repeats/${opt}R_aln.sam -o /storage/home/users/elc6/stacksv2/align/repeats/${opt}R_aln.bam 
+  samtools view -h -S -b /storage/home/users/elc6/stacksv2/align/repeats/${opt}_aln.sam -o /storage/home/users/elc6/stacksv2/align/repeats/${opt}_aln.bam 
+  
+  # merge bam files so that there is one file per sample
+ java -jar /usr/local/Modules/modulefiles/tools/picard-tools/2.14.1/picard.jar MergeSamFiles \
+      I=/storage/home/users/elc6/stacksv2/align/repeats/${opt}_aln.bam \
+      I=/storage/home/users/elc6/stacksv2/align/repeats/${opt}R_aln.bam  \
+      O=/storage/home/users/elc6/stacksv2/align/sort/${opt}T_aln.bam 
+
+  # sort reads in preparation for gstacks and put in folder for gstacks to play with
+  samtools sort ./stacksv2/align/sort/${opt}T_aln.bam -o ./stacks/align/sortv2/${opt}T_alnS.bam
+  
+  done
+
+###############################################################################################################################
+
+I had all the files aligned and sorted but then ran into issues. Turns out that there had been a problem with one particular library,
+and the paired end reads had not been sorted properly. bwa did not align the samples because the paired end reads were not in the same
+order. So I downloaded the fastq_pair code and uploaded it to the cluster, used gcc to create an executable, and filtered the fastq files
+so that only those with mate pairs were retained and F & R reads were in the same order.
+
