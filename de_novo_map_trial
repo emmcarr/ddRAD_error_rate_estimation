@@ -1,0 +1,68 @@
+When you use a genome, there is often reads that do not assign as the genome may not be complete. Therefore it is useful to do a 
+de novo loci assembly and see if there are loci that do not appear in the ref map loci catalogue.
+
+STACKS does a denovo pipeline and so I decided to trial it with my test dataset and replicates in order to identify an optimal combination
+of parameters to use on the total dataset. As with the refmap trial, I am using 20 samples from 4 populations, and have 7 replicate
+samples that are being used to estimate error rates.
+
+The code for running through the parameters is below, with an explanation of what the parameters do. I also ran a batch with m = 5
+WARNING. this takes like a month to run.
+
+######################################################################################################################################
+#!/bin/bash 
+#$ -cwd 
+#$ -j y
+#$ -S /bin/bash 
+#$ -V
+#$ -N DN_m2_var ## job name
+#$ -q highmemory.q
+#$ -pe multi 8 # the script itself will command 3 processors in parallel, this can be referred to as NSLOTS in the commandline invocation
+
+# load 
+module load stacks/2.0Beta9
+
+# m: minimum number of identical, raw reads required to create a stack set to 2
+		
+	#n: number of mismatches allowed between stacks between individuals 
+	for var_n in 2 4 6
+		do
+				
+		#M: number of mismatches allowed between stacks within individuals 
+		for var_bigM in 2 4 6
+			do
+			
+			# --gt-alpha — significance level at which to call genotypes
+			for alpha_gt in 0.05 0.01 0.001
+				do
+					
+				#--var-alpha — significance level at which to call variant sites
+				for alpha_var in 0.05 0.01
+					do
+					
+	echo Analysing de novo pipeline with m:2; n:${var_n}; M:${var_bigM}; gt_alpha:${alpha_gt}; var_alpha:${alpha_var}
+	
+	#make directory for out put files of denovo_map run
+	mkdir ./stacksv2/opt/Denovo_m2_n${var_n}_M${var_bigM}_gt${alpha_gt}_var${alpha_var}
+	
+	# run denovo_map.pl wrapper with variable m and n values
+	denovo_map.pl --paired -M ${var_bigM} -n ${var_n} -T $NSLOTS -X "ustacks:-m 2" --gt-alpha ${alpha_gt} --var-alpha ${alpha_var} \
+	-o ./stacksv2/opt/Denovo_m2_n${var_n}_M${var_bigM}_gt${alpha_gt}_var${alpha_var} --samples ./stacksv2/demup --popmap ./stacksv2/opt/popmap_refcat_May80plusReps.txt
+	
+  ## run populations to get an output for filtering : the --vcf call means the output is a vcf file
+	populations -P ./stacksv2/opt/Denovo_m2_n${var_n}_M${var_bigM}_gt${alpha_gt}_var${alpha_var} \
+	-M ./stacksv2/opt/popmap_refcat_May80plusReps.txt -t $NSLOTS \
+	-O ./stacksv2/opt/Denovo_m2_n${var_n}_M${var_bigM}_gt${alpha_gt}_var${alpha_var} --vcf
+			
+      
+			done
+		done
+	done
+done
+
+
+
+
+
+
+
+
