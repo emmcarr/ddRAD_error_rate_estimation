@@ -235,10 +235,10 @@ system("vcftools --vcf out.4.recode.vcf --site-depth --out out.5")
 
 # Read in the site depth file and calculate mean depth divided by number of samples
 site_depth_5 <- read_tsv("out.5.ldepth") %>%
-                  mutate(MEAN_DEPTH = SUM_DEPTH / 137)
+                  mutate(MEAN_DEPTH = SUM_DEPTH / 80)
 
 # Plot a histogram of the mean site depth per locus
-qplot(site_depth_5$MEAN_DEPTH, binwidth = 5, xlim = c(0, 300))
+qplot(site_depth_5$MEAN_DEPTH, binwidth = 10)
 
 # Filter out loci with a mean site depth > 3x the overall mean
 mean_site_depth_5 <- mean(site_depth_5$MEAN_DEPTH)
@@ -257,87 +257,151 @@ write_delim(to_filter_5, "remove.5.sites", col_names = FALSE)
 
 # Remove the sites with VCFtools
 system("vcftools --vcf out.4.recode.vcf --out out.5 --exclude-positions remove.5.sites --recode --recode-INFO-all")
-# 128991 kept
 
-# Remove sites with more than 75% missing data
-system("vcftools --vcf out.5.recode.vcf --out out.6 --max-missing 0.75 --recode --recode-INFO-all")
-#94179 kep
-
-## Step 4: Filtering individuals with >25% missing data
 # Calculate individual missingness
-system("vcftools --vcf out.6.recode.vcf --out out.7 --missing-indv")
+system("vcftools --vcf out.5.recode.vcf --out out.6 --missing-indv")
        
-# Load the data for the out.7.recode.vcf file
-out_7_imiss <- read_tsv("out.7.imiss")
+# Load the data for the out.6.recode.vcf file
+out_6_imiss <- read_tsv("out.6.imiss")
 
 # Plot a quick histogram of the data
-qplot(out_7_imiss$F_MISS)
+qplot(out_6_imiss$F_MISS)
 
-# Select individuals with more than 25% missing data
-miss_7 <- filter(out_7_imiss, F_MISS > 0.25) %>%
-  select(INDV)
+# Remove indels
+system("vcftools --vcf out.5.recode.vcf --out out.6 --remove-indels --recode --recode-INFO-all")
 
-# Write the individuals to remove to a file
-write_delim(miss_7, "remove.7.inds", col_names = FALSE)
+## This gives us a 'whitelist' of loci to give back to stacks, and then filter using occurence, minor allele
+## frequency and examine hwe, as well as estimating error rate
 
-# Remove the individuals with more than 25% missing genotypes
-system("vcftools --vcf out.6.recode.vcf --out out.7 --remove remove.7.inds --recode --recode-INFO-all")
+## the issue is that the stacks loci ID is not the same as variable site that we've been using
+## it's the third column, so we cut it out, remove underscore and write the data to a tab delimited file
+system("cut out.6.recode.vcf -f 3 > whitelist")
+system("sed -e 's/_/\t/g' whitelist > whitelistv2")
+system("sed '1,15d' whitelistv2 > whitelistv3")
 
-## Step 5: Create 'whitelist' of loci and 'blacklist' of samples to take back to stacks
-## which individuals to remove?
-remove <- c(miss_7, miss_50)
+# create folder for white list loci to go
+mkdir WL
 
-## which loci to keep?
-## create list of loci that have survived filtering thus far
-system("vcftools --vcf out.7.recode.vcf --site-depth --out out.8")
-whitelist_8a <- read_tsv("out.8.ldepth")
+## use this in populations to take whitelist and ensure loci are found in 80% of samples from each of the 4 populations
+## also apply minor allele frequency of 0.01 and record HWE information
+## have to restart the session because of problems with loaded programs
 
-## extract chromosome and position of loci to use
-whitelist_8 <- whitelist_8a[,1:2]
+## this could be done in a loop but as I was recording the results as I went I just did it by hand
 
-## get rid of "Contig" prefix of loci so that stacks can understand the input
-whitelist_8[,1]<-rapply(whitelist_8[,1], function(x) as.numeric(gsub("Contig", "", x)), 
-                how = "replace") 
+##populations -P ./stacksv2/gstacksMay18/Trial_mapq20_clip0.1_varalpha0.05_gtalpha0.05/ \ 
+##-M ./stacksv2/gstacksMay18/popmap_refcat_May80plusReps.txt \
+##-O ./stacksv2/gstacksMay18/Trial_mapq20_clip0.1_varalpha0.05_gtalpha0.05/WL/ \
+##-W ./stacksv2/gstacksMay18/Trial_mapq20_clip0.1_varalpha0.05_gtalpha0.05/whitelistv3 \
+##-p 4 -r 0.8 --vcf --hwe --min_maf 0.01
 
-## write good loci to file
-write_delim(whitelist_8, "whitelist_8", col_names = FALSE)
+## navigate to WL folder
 
-## Step 6: Re-extract loci from stacks using whitelist and additional filtering
-# filters: --min-maf of 0.05 : minor allele frequency
-#	   --max_obs_het: maximum observed heterozygosity
-#	   -p number of pops the loci needs to be in to include
-#          -r number of individuals per population loci needs to be in
-# also: --hwe so that loci can be filtered by hwe as well
+# Produce a file with missingness per individual
+system("vcftools --vcf populations.snps.vcf --out out.1 --missing-indv")
 
-system("populations -P ./stacksv2/gstacks/Trial_mapq10_clip0.1_varalpha0.01_gtalpha0.01/ \
-	-M ./stacksv2/gstacks/RefmapTrialVcf/popmap_refcat_Repsv2.txt \
-	-O ./stacksv2/gstacks/RefmapTrialVcf/WL \
-	-W ./stacksv2/gstacks/RefmapTrialVcf/whitelist_8 \
-	-p 5 -r 0.75 --vcf -t 16 --min-maf 0.05 --max_obs_het 0.85 --hwe")
-	
-## Step 7: Check duplicates for errors
-## create list of replicate samples
-dups_a<-c("NZ_Eau09NZ19_alnSRG", ""NZ_Eau08AI165_alnSRG"", "AUS_Eau95WA14_alnSRG",
-			"AUS_Eau95WA17_alnSRG", "AUS_Eau14HOB09_alnSRG", "SC_EAU16SAF35_alnSRG",
-			"PV_49m_alnSRG", "SC_EAU16SAF22_alnSRG", "BRZ_BREA85", "AUS_Eau12TAS05_alnSRG")
+# Load the data for the missingness file
+out_1_imiss <- read_tsv("out.1.imiss")
+pop<-c(rep("NZ", 20), rep("AUS", 20), rep("BRZ", 20), rep ("ARG", 20), rep("Rep", 8))
+missingness<-cbind(out_1_imiss, pop)
+missplot<-melt(missingness[,c(1,5,6)])
+Pops<-c("AUS", "NZ", "ARG", "BRZ", "Rep")
+missplot<-within(missplot,pop<-factor(pop,levels=Pops))
+
+myPal4 <- c("green" ,"blue", "yellow", "pink", "black")
+
+q<-ggplot(data=missplot, aes(x=INDV, y=value, fill=pop))
+q<-q+geom_bar(stat = "identity")+scale_y_continuous(labels=percent_format())+scale_fill_manual(values = myPal4)
+q<-q+theme(axis.text.x = element_text(size=6, angle = 90),
+           axis.text.y = element_text(size=10),
+           legend.text=element_text(size=10),
+           legend.title=element_blank())
+
+pdf("final_missingness_per_sample.postQC.pdf")
+q
+dev.off()
+
+# calculate mean amount of missing data per sample and its standard deviation
+mean(missingness$F_MISS)
+sd(missingness$F_MISS)
+
+## Plot coverage per locus as well
+# Calculate site depth
+system("vcftools --vcf populations.snps.vcf --site-depth --out out.2")
+
+# Read in the site depth file and calculate mean depth divided by number of samples (88 because of duplicates)
+site_depth_2 <- read_tsv("out.2.ldepth") %>%
+                  mutate(MEAN_DEPTH = SUM_DEPTH / 87)
+
+# Plot a histogram of the mean site depth per locus
+pdf("final_mean_depth_per_site.pdf")
+qplot(site_depth_2$MEAN_DEPTH, binwidth = 10)
+dev.off()
+
+## calculate mean and standard deviation of mean site depth per locus per sample
+mean(site_depth_2$MEAN_DEPTH)
+sd(site_depth_2$MEAN_DEPTH)
+
+## calculating error rates
+dups_a<-c("NZ_Eau09NZ19_alnSRG", "NZ_Eau08AI165_alnSRG", "AUS_Eau95WA14_alnSRG",
+			"AUS_Eau95WA17_alnSRG", "AUS_Eau14HOB09_alnSRG",
+			"BZ_BREA85_alnSRG", "AUS_Eau12TAS05_alnSRG")
 			
 ## and their duplicates
-dups_b<-c("NZ_Eau09NZ19R_alnSRG", ""NZ_Eau08AI165R_alnSRG"", "AUS_Eau95WA14R_alnSRG",
-			"AUS_Eau95WA17R_alnSRG", "AUS_Eau14HOB09R_alnSRG", "SC_EAU16SAF35R_alnSRG",
-			"PV_49mR_alnSRG", "SC_EAU16SAF22R_alnSRG", "BRZ_BREA85R", "AUS_Eau12TAS05R_alnSRG")
+dups_b<-c("NZ_Eau09NZ19R_alnSRG", "NZ_Eau08AI165R_alnSRG", "AUS_Eau95WA14R_alnSRG",
+			"AUS_Eau95WA17R1_alnSRG", "AUS_Eau14HOB09R_alnSRG", 
+			"BZ_BREA85R_alnSRG", "AUS_Eau12TAS05R_alnSRG")
 
 # write the names to file
 write_delim(as.data.frame(dups_a), "dups_a.txt", col_names = FALSE)
 write_delim(as.data.frame(dups_b), "dups_b.txt", col_names = FALSE)
 
-#filter to create one vcf file of samples and one of their duplicates
-system("vcftools --vcf out.2.3.recode.vcf --out dups.a --keep dups_a.txt --recode --recode-INFO-all")
-system("vcftools --vcf out.2.3.recode.vcf --out dups.b --keep dups_b.txt --recode --recode-INFO-all")
+			
+#filter to create one vcf file of replicates and one of duplicates
+system("vcftools --vcf populations.snps.vcf --out dups.a --keep dups_a.txt --recode --recode-INFO-all")
+system("vcftools --vcf populations.snps.vcf --out dups.b --keep dups_b.txt --recode --recode-INFO-all")
 
-# need to rename samples so that they are the same: did this in text editor but will figure out a way to loop it
+# need to rename samples so that they are the same - did manually
+system("nano dups.b.recode.vcf")
+
 # then compare the two files to identify discordant loci
-system("vcftools --vcf dups.a.recode.vcf --diff dups.c.recode.vcf --diff-site-discordance --out out.2.4")
-# this can be used to identify loci to exclude and estimate error rate
+system("vcftools --vcf dups.a.recode.vcf --diff dups.b.recode.vcf --diff-site-discordance --out out.3.rep")
+
+# this can be used to identify loci to exclude and estimate error rate during the 'real' run
+
+discord <- read_tsv("out.3.rep.diff.sites")
+
+## per allele error rate
+sum(discord$N_DISCORD)
+sum(discord$N_COMMON_CALLED)
+sum(discord$N_DISCORD)/sum(discord$N_COMMON_CALLED)
+
+## error free variable sites
+table(discord$N_DISCORD)[1]		
+
+## stacks does a HWE test in the populations commnad and we can use the output to look at how many sites and loci deviated from expectations
+out.hwe<-read.table("populations.sumstats.tsv")
+colnames(out.hwe)<-c("LocusID", "CHROM", "POS", "Col", "Pop", "PNuc", "QNuc", "N", "P", "ObsHet",
+"ObsHom", "ExpHet", "ExpHom", "Pi", "SmPi", "SmPi_p", "SmFis", "SmFis_p", "HWE", "HWE_p", "private")
+
+## pull out the HWE estimate if it < 0.01 and its stacks ID and variable site location
+excl.hwe<-filter(out.hwe, HWE_p<0.01) %>%
+	select(LocusID, CHROM, POS)
+	
+# number of variable sites out of hwe at p = 0.01
+nrow(unique(excl.hwe))
+
+# number of loci out of hwe at p = 0.01
+length(unique(excl.hwe[,1]))
+	
+# not necessarily removing them, but good to have a record
+write_delim(excl.hwe, "remove.hwe.sites", col_names = FALSE)
+
+################################################################################################################################################
+
+I then compared the output in terms of number of variable sites that made the final QC, proportion of missing data, depth and error rates
+and decided that the best combination of parameters for the right whale dataset was: mapq = 10, clipq = 0.1, gt-alpha = 0.01 and SNP-alpha
+=0.01. The proportion of error free variable sites was >98% and the error rate was 0.003 per allele 
+(there were 847 discordant alleles in >320,000 called).
 
 
 
