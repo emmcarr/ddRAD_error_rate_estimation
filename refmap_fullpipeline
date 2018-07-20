@@ -102,5 +102,85 @@ for opt in PV_16m PV_109m PV_110m PV_27m
 I had all the files aligned and sorted but then ran into issues. Turns out that there had been a problem with one particular library,
 and the paired end reads had not been sorted properly. bwa did not align the samples because the paired end reads were not in the same
 order. So I downloaded the fastq_pair code and uploaded it to the cluster, used gcc to create an executable, and filtered the fastq files
-so that only those with mate pairs were retained and F & R reads were in the same order.
+so that only those with mate pairs were retained and F & R reads were in the same order. This is the bash script for this part of the pipeline: 
+
+###############################################################################################################################
+
+#!/bin/bash 
+#$ -cwd 
+#$ -j y
+#$ -S /bin/bash 
+#$ -V
+#$ -N FixingMatePair ## job name
+#$ -q all.q
+#$ -pe multi 6 # the script itself will command 3 processors in parallel, this can be referred to as NSLOTS in the commandline invocation
+
+module load samtools/1.6
+module load bwa
+
+for opt in SN_SA950045 SN_SA950053 SN_SA950064 SN_SA950070 SN_SA950079 SN_SA950080 SN_SA950084 SN_SA970488 
+ 	do
+
+#copy fastq files to folder where fastq_pair is
+		cp /storage/home/users/elc6/stacksv2/demup/${opt}.1.fq.gz /storage/home/users/elc6/build/fastq-pair-master/
+		cp /storage/home/users/elc6/stacksv2/demup/${opt}.2.fq.gz /storage/home/users/elc6/build/fastq-pair-master/
+
+#unzip files so that fastq_pair can work
+		gunzip /storage/home/users/elc6/build/fastq-pair-master/${opt}.1.fq.gz
+		gunzip /storage/home/users/elc6/build/fastq-pair-master/${opt}.2.fq.gz
+
+#run fastq_pair
+		/storage/home/users/elc6/build/fastq-pair-master/fastq_pair -t 100000 \
+		build/fastq-pair-master/${opt}.1.fq build/fastq-pair-master/${opt}.2.fq 
+
+#run bwa on fixed fastq samples
+		bwa mem /storage/home/users/elc6/stacksv2/SRWgenome/RWref -t $NSLOTS \
+		/storage/home/users/elc6/build/fastq-pair-master/${opt}.1.fq.paired.fq /storage/home/users/elc6/build/fastq-pair-master/${opt}.2.fq.paired.fq \
+		> /storage/home/users/elc6/stacksv2/align/${opt}_aln.sam
+
+#convert sam to bam
+ 		samtools view -h -S -b /storage/home/users/elc6/stacksv2/align/repeats/${opt}_aln.sam -o /storage/home/users/elc6/stacksv2/align/repeats/${opt}_aln.bam 
+
+#sort bam files
+ 		samtools sort /storage/home/users/elc6/stacksv2/align/sort/${opt}_aln.bam -o /storage/home/users/elc6/stacks/align/sortv2/${opt}_alnS.bam
+  	
+  		done
+    
+###############################################################################################################################
+
+This was concerning, and I picked it up partly through an error when trialling stacks and partly because the problem samples were amongst
+a handful that had very small file sizes. None actually had 0 B file size, but when I checked the log I could see that two samples
+had not aligned properly and that these samples had thrown up errors regarding the mate pair names. One sample just had a very small
+number of reads to begin with, so it made sense that it was a small file. Checking through all the alignment log files again no other
+errors seemed apparent, so I moved on to running gstacks and populations with the following code: 
+
+###############################################################################################################################
+
+#!/bin/bash 
+#$ -cwd 
+#$ -j y
+#$ -S /bin/bash 
+#$ -V
+#$ -N AllSamples ## job name
+#$ -q all.q
+#$ -pe multi 6 # the script itself will command 3 processors in parallel, this can be referred to as NSLOTS in the commandline invocation
+
+
+# load 
+#module load stacks
+module load stacks/2.0Beta9
+
+     	## analyse all samples with gstacks
+      	gstacks -M ./stacksv2/align/alignrun/SRW_popmap_alligned.txt \
+      	-I ./stacksv2/align/sort/ -O ./stacksv2/align/alignrun \
+      	--min-mapq 10 --var-alpha 0.01 --gt-alpha 0.01 --max-clipped 0.1 -t $NSLOTS
+      	
+      	## run populations to get all loci for initial QC
+      	populations -P ./stacksv2/align/alignrun/ \
+      	-M ./stacksv2/align/alignrun/SRW_popmap_alligned.txt \
+      	-O ./stacksv2/align/alignrunpop/ \
+      	-t $NSLOTS --vcf --hwe
+
+###############################################################################################################################
+
 
